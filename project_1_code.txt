@@ -1,0 +1,706 @@
+::: {.cell .code execution_count="1"}
+``` python
+# Import libraries that are required to run your project
+# You are allowed to add more libraries as you need
+
+import pandas as pd
+import numpy as np
+import os
+from scipy.stats import spearmanr
+import pyBigWig
+```
+:::
+
+::: {.cell .markdown}
+## Work Package 1.1 - Modeling Choices & Data Pre-processing {#work-package-11---modeling-choices--data-pre-processing}
+:::
+
+:::::::::::::::::::::::::: {.cell .code execution_count="19"}
+``` python
+# TODO: 
+# Load your feature (bed and/or bigwig and/or fasta) and target files (tsv) here.
+# Decide which features to use for training. Feel free to process them however you need.
+
+# NOTE: 
+# bed and bigwig files contain signals of all chromosomes (including sex chromosomes).
+# Training and validation split based on chromosomes has been done for you. 
+# However, you can resplit the data in any way you want.
+
+path_data = "/Users/ferdinandunterhuber/Documents/Studium/Master/ETH/ML for Genomics/ML4G_Project_1_Data/Neuer Ordner mit Objekten/"  
+path_test = "/Users/ferdinandunterhuber/Documents/Studium/Master/ETH/ML for Genomics/ML4G_Project_1_Data/Neuer Ordner mit Objekten/CAGE-train/X3_test_info.tsv" 
+test_genes = pd.read_csv(path_test, sep='\t')
+# ---------------------------INSERT CODE HERE---------------------------
+
+#BigWig-Feature Extraktion
+#-------------------------
+feature_paths = {
+    "H3K27me3": os.path.join(path_data, "H3K27me3-bigwig"),
+    "H3K4me1":  os.path.join(path_data, "H3K4me1-bigwig"),
+    "H3K4me3":  os.path.join(path_data, "H3K4me3-bigwig"),
+    "H3K27ac":  os.path.join(path_data, "H3K27ac-bigwig"),
+    "H3K36me3": os.path.join(path_data, "H3K36me3-bigwig"),
+    "H3K9me3":  os.path.join(path_data, "H3K9me3-bigwig"),
+    "DNase":    os.path.join(path_data, "DNase-bigwig"),
+}
+
+# Extract mid signal ±window around TSS 
+#-------------------------
+def extract_mean_signal(bw_path, gene_df, window=2000):
+    bw = pyBigWig.open(bw_path)
+    signals = []
+    for _, row in gene_df.iterrows():
+        chrom, start, end = row["chr"], int(row["TSS_start"]), int(row["TSS_end"])
+        tss_center = (start + end) // 2
+        start = max(0, tss_center - window)
+        end = tss_center + window
+        try:
+            values = np.array(bw.values(chrom, start, end))
+            mean_signal = np.nanmean(values)
+        except Exception:
+            mean_signal = np.nan
+        signals.append(mean_signal)
+    bw.close()
+    return signals
+
+# BED-feautre extraciton
+#-------------------------------
+bed_paths = {
+    "H3K27me3": os.path.join(path_data, "H3K27me3-bed"),
+    "H3K4me1":  os.path.join(path_data, "H3K4me1-bed"),
+    "H3K4me3":  os.path.join(path_data, "H3K4me3-bed"),
+    "H3K27ac":  os.path.join(path_data, "H3K27ac-bed"),
+    "H3K36me3": os.path.join(path_data, "H3K36me3-bed"),
+    "H3K9me3":  os.path.join(path_data, "H3K9me3-bed"),
+    "DNase":    os.path.join(path_data, "DNase-bed"),
+}
+
+def extract_bed_features(bed_path, gene_df, window=2000):
+    
+    bed_df = pd.read_csv(bed_path, sep="\t", header=None,
+                         names=["chr","start","end","peak_id","score",".","val1","val2","val3","val4"])
+    
+    features = {"peak_count_window":[], "peak_max_score":[], "peak_sum_len":[], "nearest_peak_dist":[]}
+    
+    for _, row in gene_df.iterrows():
+        chrom, tss_center = row["chr"], (row["TSS_start"]+row["TSS_end"])//2
+        start_window = tss_center - window
+        end_window   = tss_center + window
+        
+        chrom_peaks = bed_df[bed_df["chr"] == chrom]
+        overlaps = chrom_peaks[(chrom_peaks["end"] >= start_window) & (chrom_peaks["start"] <= end_window)]
+        
+        features["peak_count_window"].append(len(overlaps))
+        
+        if len(overlaps)>0:
+            features["peak_max_score"].append(overlaps["score"].max())
+            features["peak_sum_len"].append((overlaps["end"]-overlaps["start"]).sum())
+            dists = np.minimum(np.abs(overlaps["start"]-tss_center), np.abs(overlaps["end"]-tss_center))
+            features["nearest_peak_dist"].append(dists.min())
+        else:
+            features["peak_max_score"].append(0)
+            features["peak_sum_len"].append(0)
+            features["nearest_peak_dist"].append(window)
+            
+    return pd.DataFrame(features)
+
+
+
+#Create Features for Training fct
+#--------------------------
+
+def prepare_features(dataset):
+    
+    info_path_train = os.path.join(path_data, f"{dataset}_train_info.tsv")
+    info_path_val   = os.path.join(path_data, f"{dataset}_val_info.tsv")
+    y_path_train    = os.path.join(path_data, f"{dataset}_train_y.tsv")
+    y_path_val      = os.path.join(path_data, f"{dataset}_val_y.tsv")
+    
+    train_info = pd.read_csv(info_path_train, sep="\t")
+    val_info   = pd.read_csv(info_path_val, sep="\t")
+    
+    y_train = pd.read_csv(y_path_train, sep="\t")["gex"]
+    y_val   = pd.read_csv(y_path_val, sep="\t")["gex"]
+
+    def build_feature_matrix(info_df, dataset_name=""):
+        df = pd.DataFrame({"gene_name": info_df["gene_name"]})
+        
+        for mark, folder in feature_paths.items():
+            bw_file = os.path.join(folder, f"{dataset}.bw")
+            print(f"  → {mark} (BigWig) [{dataset_name}] ...")
+            df[mark] = extract_mean_signal(bw_file, info_df)
+            
+        for mark, folder in bed_paths.items():
+            bed_file = os.path.join(folder, f"{dataset}.bed")
+            print(f"  → {mark} (BED) [{dataset_name}] ...")
+            bed_feat = extract_bed_features(bed_file, info_df)
+            bed_feat = bed_feat.add_prefix(f"{mark}_")
+            df = pd.concat([df, bed_feat], axis=1)
+    
+        return df
+
+    
+    X_train = build_feature_matrix(train_info, dataset_name="train")
+    X_val   = build_feature_matrix(val_info, dataset_name="val")
+    
+    return X_train, y_train, X_val, y_val
+
+
+# Create Test feature fct
+#---------------------
+def prepare_test_features():
+    info_df = pd.read_csv(os.path.join(path_data, "CAGE-train", "X3_test_info.tsv"), sep="\t")
+    
+    df = pd.DataFrame({"gene_name": info_df["gene_name"]})
+    for mark, folder in feature_paths.items():
+        bw_file = os.path.join(folder, "X3.bw")
+        print(f"  → {mark} ...")
+        df[mark] = extract_mean_signal(bw_file, info_df)
+
+    for mark, folder in bed_paths.items():
+        bed_file = os.path.join(folder, "X3.bed")
+        print(f"  → {mark} (BED) ...")
+        bed_feat = extract_bed_features(bed_file, info_df)
+        bed_feat = bed_feat.add_prefix(f"{mark}_")
+        df = pd.concat([df, bed_feat], axis=1)
+    return df
+
+# Create
+#--------------------------
+X1_train, y1_train, X1_val, y1_val = prepare_features("X1")
+X2_train, y2_train, X2_val, y2_val = prepare_features("X2")
+
+
+# ---------------------------------------------------------------------- 
+```
+
+::: {.output .stream .stdout}
+      → H3K27me3 (BigWig) [train] ...
+:::
+
+::: {.output .stream .stderr}
+    /var/folders/qp/wyb42dt146d31mlj7r9bwtmm0000gn/T/ipykernel_99719/10336946.py:39: RuntimeWarning: Mean of empty slice
+      mean_signal = np.nanmean(values)
+:::
+
+::: {.output .stream .stdout}
+      → H3K4me1 (BigWig) [train] ...
+:::
+
+::: {.output .stream .stderr}
+    /var/folders/qp/wyb42dt146d31mlj7r9bwtmm0000gn/T/ipykernel_99719/10336946.py:39: RuntimeWarning: Mean of empty slice
+      mean_signal = np.nanmean(values)
+:::
+
+::: {.output .stream .stdout}
+      → H3K4me3 (BigWig) [train] ...
+      → H3K27ac (BigWig) [train] ...
+:::
+
+::: {.output .stream .stderr}
+    /var/folders/qp/wyb42dt146d31mlj7r9bwtmm0000gn/T/ipykernel_99719/10336946.py:39: RuntimeWarning: Mean of empty slice
+      mean_signal = np.nanmean(values)
+:::
+
+::: {.output .stream .stdout}
+      → H3K36me3 (BigWig) [train] ...
+:::
+
+::: {.output .stream .stderr}
+    /var/folders/qp/wyb42dt146d31mlj7r9bwtmm0000gn/T/ipykernel_99719/10336946.py:39: RuntimeWarning: Mean of empty slice
+      mean_signal = np.nanmean(values)
+:::
+
+::: {.output .stream .stdout}
+      → H3K9me3 (BigWig) [train] ...
+:::
+
+::: {.output .stream .stderr}
+    /var/folders/qp/wyb42dt146d31mlj7r9bwtmm0000gn/T/ipykernel_99719/10336946.py:39: RuntimeWarning: Mean of empty slice
+      mean_signal = np.nanmean(values)
+:::
+
+::: {.output .stream .stdout}
+      → DNase (BigWig) [train] ...
+      → H3K27me3 (BED) [train] ...
+      → H3K4me1 (BED) [train] ...
+      → H3K4me3 (BED) [train] ...
+      → H3K27ac (BED) [train] ...
+      → H3K36me3 (BED) [train] ...
+      → H3K9me3 (BED) [train] ...
+      → DNase (BED) [train] ...
+      → H3K27me3 (BigWig) [val] ...
+      → H3K4me1 (BigWig) [val] ...
+      → H3K4me3 (BigWig) [val] ...
+      → H3K27ac (BigWig) [val] ...
+      → H3K36me3 (BigWig) [val] ...
+      → H3K9me3 (BigWig) [val] ...
+      → DNase (BigWig) [val] ...
+      → H3K27me3 (BED) [val] ...
+      → H3K4me1 (BED) [val] ...
+      → H3K4me3 (BED) [val] ...
+      → H3K27ac (BED) [val] ...
+      → H3K36me3 (BED) [val] ...
+      → H3K9me3 (BED) [val] ...
+      → DNase (BED) [val] ...
+      → H3K27me3 (BigWig) [train] ...
+:::
+
+::: {.output .stream .stderr}
+    /var/folders/qp/wyb42dt146d31mlj7r9bwtmm0000gn/T/ipykernel_99719/10336946.py:39: RuntimeWarning: Mean of empty slice
+      mean_signal = np.nanmean(values)
+:::
+
+::: {.output .stream .stdout}
+      → H3K4me1 (BigWig) [train] ...
+:::
+
+::: {.output .stream .stderr}
+    /var/folders/qp/wyb42dt146d31mlj7r9bwtmm0000gn/T/ipykernel_99719/10336946.py:39: RuntimeWarning: Mean of empty slice
+      mean_signal = np.nanmean(values)
+:::
+
+::: {.output .stream .stdout}
+      → H3K4me3 (BigWig) [train] ...
+:::
+
+::: {.output .stream .stderr}
+    /var/folders/qp/wyb42dt146d31mlj7r9bwtmm0000gn/T/ipykernel_99719/10336946.py:39: RuntimeWarning: Mean of empty slice
+      mean_signal = np.nanmean(values)
+:::
+
+::: {.output .stream .stdout}
+      → H3K27ac (BigWig) [train] ...
+:::
+
+::: {.output .stream .stderr}
+    /var/folders/qp/wyb42dt146d31mlj7r9bwtmm0000gn/T/ipykernel_99719/10336946.py:39: RuntimeWarning: Mean of empty slice
+      mean_signal = np.nanmean(values)
+:::
+
+::: {.output .stream .stdout}
+      → H3K36me3 (BigWig) [train] ...
+:::
+
+::: {.output .stream .stderr}
+    /var/folders/qp/wyb42dt146d31mlj7r9bwtmm0000gn/T/ipykernel_99719/10336946.py:39: RuntimeWarning: Mean of empty slice
+      mean_signal = np.nanmean(values)
+:::
+
+::: {.output .stream .stdout}
+      → H3K9me3 (BigWig) [train] ...
+:::
+
+::: {.output .stream .stderr}
+    /var/folders/qp/wyb42dt146d31mlj7r9bwtmm0000gn/T/ipykernel_99719/10336946.py:39: RuntimeWarning: Mean of empty slice
+      mean_signal = np.nanmean(values)
+:::
+
+::: {.output .stream .stdout}
+      → DNase (BigWig) [train] ...
+      → H3K27me3 (BED) [train] ...
+      → H3K4me1 (BED) [train] ...
+      → H3K4me3 (BED) [train] ...
+      → H3K27ac (BED) [train] ...
+      → H3K36me3 (BED) [train] ...
+      → H3K9me3 (BED) [train] ...
+      → DNase (BED) [train] ...
+      → H3K27me3 (BigWig) [val] ...
+      → H3K4me1 (BigWig) [val] ...
+      → H3K4me3 (BigWig) [val] ...
+      → H3K27ac (BigWig) [val] ...
+      → H3K36me3 (BigWig) [val] ...
+      → H3K9me3 (BigWig) [val] ...
+      → DNase (BigWig) [val] ...
+      → H3K27me3 (BED) [val] ...
+      → H3K4me1 (BED) [val] ...
+      → H3K4me3 (BED) [val] ...
+      → H3K27ac (BED) [val] ...
+      → H3K36me3 (BED) [val] ...
+      → H3K9me3 (BED) [val] ...
+      → DNase (BED) [val] ...
+      → H3K27me3 ...
+      → H3K4me1 ...
+      → H3K4me3 ...
+      → H3K27ac ...
+      → H3K36me3 ...
+      → H3K9me3 ...
+      → DNase ...
+      → H3K27me3 (BED) ...
+      → H3K4me1 (BED) ...
+      → H3K4me3 (BED) ...
+      → H3K27ac (BED) ...
+      → H3K36me3 (BED) ...
+      → H3K9me3 (BED) ...
+      → DNase (BED) ...
+:::
+::::::::::::::::::::::::::
+
+:::: {.cell .code execution_count="74"}
+``` python
+#X_train = X1_train
+#y_train = y1_train
+
+#X_val = X1_val
+#y_val = y1_val
+
+# Kombiniere X1 und X2 für globales Training
+X_train = pd.concat([X1_train, X2_train], ignore_index=True)
+y_train = pd.concat([y1_train, y2_train], ignore_index=True)
+
+X_val = pd.concat([X1_val, X2_val], ignore_index=True)
+y_val = pd.concat([y1_val, y2_val], ignore_index=True)
+
+X_test = prepare_test_features()
+#print(f"\nTestdaten Shape: {X_test.shape}")
+
+
+#X_test = X2_val
+```
+
+::: {.output .stream .stdout}
+      → H3K27me3 ...
+      → H3K4me1 ...
+      → H3K4me3 ...
+      → H3K27ac ...
+      → H3K36me3 ...
+      → H3K9me3 ...
+      → DNase ...
+      → H3K27me3 (BED) ...
+      → H3K4me1 (BED) ...
+      → H3K4me3 (BED) ...
+      → H3K27ac (BED) ...
+      → H3K36me3 (BED) ...
+      → H3K9me3 (BED) ...
+      → DNase (BED) ...
+:::
+::::
+
+::: {.cell .markdown}
+## Work Package 1.2 - Model Building {#work-package-12---model-building}
+:::
+
+:::: {.cell .code execution_count="96"}
+``` python
+# TODO: 
+# Select the best model to predict gene expression from the obtained features in WP 1.1.
+
+# ---------------------------INSERT CODE HERE---------------------------
+from xgboost import XGBRegressor
+from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import make_scorer
+from scipy.stats import spearmanr
+import numpy as np
+
+# Custom Spearman scorer
+#--------------------------
+def spearman_scorer(y_true, y_pred):
+    rho, _ = spearmanr(y_true, y_pred)
+    return rho
+
+spearman_sklearn = make_scorer(spearman_scorer, greater_is_better=True)
+
+# Log-Transformation
+#--------------------------
+y_train_log = np.log1p(y_train)
+y_val_log   = np.log1p(y_val)
+
+# Model initialization
+#--------------------------
+xgb_base = XGBRegressor(
+    objective="reg:squarederror", 
+    random_state=42,
+    n_estimators=500
+)
+
+# Hyperparameter tuning
+#--------------------------
+param_grid = {
+    "max_depth": [7, 8],
+    "learning_rate": [0.007, 0.0075],
+    "subsample": [0.8, 0.85 ],
+    "colsample_bytree": [0.75, 0.8],
+    "min_child_weight": [7],
+    "gamma": [0.18]
+}
+
+grid_search = GridSearchCV(
+    estimator=xgb_base,
+    param_grid=param_grid,
+    scoring=spearman_sklearn,
+    cv=5,
+    verbose=2,
+    n_jobs=-1
+)
+
+# Fit and choose best model
+#--------------------------
+grid_search.fit(
+    X_train.drop(columns=["gene_name"]),
+    y_train_log
+)
+
+best_model = grid_search.best_estimator_
+
+
+
+# Prediciton and Pre-Evaluation on X2 (delete later)
+#--------------------------
+#y2_pred_log = best_model.predict(X_test.drop(columns=["gene_name"]))
+#y2_pred = np.expm1(y2_pred_log)
+
+#rho, p_value = spearmanr(y2_val, y2_pred)
+
+print("\nBeste Parameter:")
+print(grid_search.best_params_)
+print(f"Spearman’s correlation (ρ): {rho:.4f}")
+print(f"P-value: {p_value:.4e}")
+
+# ----------------------------------------------------------------------
+```
+
+::: {.output .stream .stdout}
+    Fitting 5 folds for each of 16 candidates, totalling 80 fits
+
+    Beste Parameter:
+    {'colsample_bytree': 0.8, 'gamma': 0.18, 'learning_rate': 0.007, 'max_depth': 8, 'min_child_weight': 7, 'subsample': 0.8}
+    Spearman’s correlation (ρ): 0.7625
+    P-value: 0.0000e+00
+:::
+::::
+
+:::::::::::: {.cell .code execution_count="7"}
+``` python
+# ---------------------------INSERT CODE HERE---------------------------
+import os
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import make_scorer
+from scipy.stats import spearmanr
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C, WhiteKernel
+
+# ----------------------------
+# 1️⃣ Spearman scorer
+# ----------------------------
+def spearman_scorer(y_true, y_pred):
+    rho, _ = spearmanr(y_true, y_pred)
+    return rho
+
+spearman_sklearn = make_scorer(spearman_scorer, greater_is_better=True)
+
+# ----------------------------
+# 2️⃣ Prepare data
+# ----------------------------
+X_train1 = X1_train.drop(columns=["gene_name"], errors="ignore").fillna(0).astype(np.float32)
+X_test   = prepare_test_features().drop(columns=["gene_name"], errors="ignore").fillna(0).astype(np.float32)
+
+y_train_log = y1_train
+y_test      = y2_train  # adjust if using different target
+
+# ----------------------------
+# 3️⃣ Gaussian Process Regressor
+# ----------------------------
+kernel = C(1.0, (1e-3, 1e3)) * RBF(length_scale=1.0, length_scale_bounds=(1e-2, 1e2)) \
+         + WhiteKernel(noise_level=1, noise_level_bounds=(1e-5, 1e1))
+
+gpr = GaussianProcessRegressor(kernel=kernel, normalize_y=True, random_state=42)
+
+param_grid_gpr = {
+    "alpha": [1e-5, 1e-3],
+    "n_restarts_optimizer": [3]
+}
+
+grid_gpr = GridSearchCV(
+    estimator=gpr,
+    param_grid=param_grid_gpr,
+    scoring=spearman_sklearn,
+    cv=2,
+    verbose=2,
+    n_jobs=-1
+)
+
+grid_gpr.fit(X_train1, y_train_log)
+best_gpr = grid_gpr.best_estimator_
+
+
+# ----------------------------------------------------------------------
+```
+
+::: {.output .stream .stdout}
+
+    === Erzeuge Test-Features für X3 ===
+      → H3K27me3 ...
+      → H3K4me1 ...
+      → H3K4me3 ...
+      → H3K27ac ...
+      → H3K36me3 ...
+      → H3K9me3 ...
+      → DNase ...
+      → H3K27me3 (BED) ...
+      → H3K4me1 (BED) ...
+      → H3K4me3 (BED) ...
+      → H3K27ac (BED) ...
+      → H3K36me3 (BED) ...
+      → H3K9me3 (BED) ...
+      → DNase (BED) ...
+    Fitting 2 folds for each of 2 candidates, totalling 4 fits
+    [CV] END colsample_bytree=0.85, gamma=0.18, learning_rate=0.009, max_depth=5, min_child_weight=7, subsample=0.75; total time=   1.1s
+    [CV] END colsample_bytree=0.85, gamma=0.18, learning_rate=0.009, max_depth=5, min_child_weight=7, subsample=0.75; total time=   1.1s
+:::
+
+::: {.output .stream .stderr}
+    /Users/ferdinandunterhuber/anaconda3/lib/python3.11/site-packages/sklearn/gaussian_process/kernels.py:450: ConvergenceWarning: The optimal value found for dimension 0 of parameter k1__k2__length_scale is close to the specified upper bound 100.0. Increasing the bound and calling fit again may find a better value.
+      warnings.warn(
+    /Users/ferdinandunterhuber/anaconda3/lib/python3.11/site-packages/sklearn/gaussian_process/kernels.py:450: ConvergenceWarning: The optimal value found for dimension 0 of parameter k1__k2__length_scale is close to the specified upper bound 100.0. Increasing the bound and calling fit again may find a better value.
+      warnings.warn(
+:::
+
+::: {.output .stream .stdout}
+    [CV] END colsample_bytree=0.85, gamma=0.18, learning_rate=0.009, max_depth=5, min_child_weight=7, subsample=0.75; total time=   1.0s
+    [CV] END ................alpha=0.001, n_restarts_optimizer=3; total time=83.7min
+:::
+
+::: {.output .stream .stderr}
+    /Users/ferdinandunterhuber/anaconda3/lib/python3.11/site-packages/sklearn/gaussian_process/kernels.py:450: ConvergenceWarning: The optimal value found for dimension 0 of parameter k1__k2__length_scale is close to the specified upper bound 100.0. Increasing the bound and calling fit again may find a better value.
+      warnings.warn(
+:::
+
+::: {.output .stream .stdout}
+    [CV] END colsample_bytree=0.85, gamma=0.18, learning_rate=0.009, max_depth=5, min_child_weight=7, subsample=0.75; total time=   1.0s
+    [CV] END ................alpha=1e-05, n_restarts_optimizer=3; total time=87.5min
+    [CV] END colsample_bytree=0.85, gamma=0.18, learning_rate=0.009, max_depth=5, min_child_weight=7, subsample=0.75; total time=   1.0s
+    [CV] END ................alpha=0.001, n_restarts_optimizer=3; total time=91.0min
+:::
+
+::: {.output .stream .stderr}
+    /Users/ferdinandunterhuber/anaconda3/lib/python3.11/site-packages/sklearn/gaussian_process/kernels.py:450: ConvergenceWarning: The optimal value found for dimension 0 of parameter k1__k2__length_scale is close to the specified upper bound 100.0. Increasing the bound and calling fit again may find a better value.
+      warnings.warn(
+:::
+
+::: {.output .stream .stdout}
+    [CV] END ................alpha=1e-05, n_restarts_optimizer=3; total time=96.6min
+:::
+
+::: {.output .stream .stderr}
+    /Users/ferdinandunterhuber/anaconda3/lib/python3.11/site-packages/sklearn/gaussian_process/kernels.py:450: ConvergenceWarning: The optimal value found for dimension 0 of parameter k1__k2__length_scale is close to the specified upper bound 100.0. Increasing the bound and calling fit again may find a better value.
+      warnings.warn(
+:::
+
+::: {.output .error ename="ValueError" evalue="all the input array dimensions except for the concatenation axis must match exactly, but along dimension 0, the array at index 0 has size 14310 and the array at index 1 has size 1984"}
+    ---------------------------------------------------------------------------
+    ValueError                                Traceback (most recent call last)
+    Cell In[7], line 59
+         57 y_pred_log_gpr = best_gpr.predict(X_test)
+         58 y_pred_gpr = np.expm1(y_pred_log_gpr)
+    ---> 59 rho_gpr, p_gpr = spearmanr(y_test, y_pred_gpr)
+         61 print("\n[GPR RESULTS]")
+         62 print("Best params:", grid_gpr.best_params_)
+
+    File ~/anaconda3/lib/python3.11/site-packages/scipy/stats/_stats_py.py:5427, in spearmanr(a, b, axis, nan_policy, alternative)
+       5425 b, _ = _chk_asarray(b, axis)
+       5426 if axisout == 0:
+    -> 5427     a = np.column_stack((a, b))
+       5428 else:
+       5429     a = np.row_stack((a, b))
+
+    File ~/anaconda3/lib/python3.11/site-packages/numpy/lib/shape_base.py:652, in column_stack(tup)
+        650         arr = array(arr, copy=False, subok=True, ndmin=2).T
+        651     arrays.append(arr)
+    --> 652 return _nx.concatenate(arrays, 1)
+
+    ValueError: all the input array dimensions except for the concatenation axis must match exactly, but along dimension 0, the array at index 0 has size 14310 and the array at index 1 has size 1984
+:::
+::::::::::::
+
+:::: {.cell .code execution_count="13"}
+``` python
+# =======================================
+# ✅ Evaluate model on X2_test
+# =======================================
+
+# Prepare test data
+X2_test = X2_train.drop(columns=["gene_name"], errors="ignore").fillna(0).astype(np.float32)
+
+# Log-transform y2_train (your true targets for X2)
+y_test_log = np.log1p(y2_train)
+
+# Predict on X2_test
+y_pred_log_gpr = best_gpr.predict(X2_test)
+y_pred_gpr = np.expm1(y_pred_log_gpr)
+
+# Check shapes (should match)
+print(f"Shape check: y_test={y_test_log.shape}, y_pred={y_pred_gpr.shape}")
+
+# Compute Spearman correlation
+rho_gpr, p_gpr = spearmanr(y2_train, y_pred_gpr)
+
+print("\n[GPR RESULTS — Evaluation on X2_test]")
+print(f"Spearman’s ρ: {rho_gpr:.4f}, p={p_gpr:.4e}")
+```
+
+::: {.output .stream .stdout}
+    Shape check: y_test=(14310,), y_pred=(14310,)
+
+    [GPR RESULTS — Evaluation on X2_test]
+    Spearman’s ρ: 0.6025, p=0.0000e+00
+:::
+::::
+
+::: {.cell .markdown}
+## Work Package 1.3 - Prediction on Test Data (Evaluation Metric) {#work-package-13---prediction-on-test-data-evaluation-metric}
+:::
+
+::: {.cell .code execution_count="88"}
+``` python
+# TODO:
+# Using the model trained in WP 1.2, make predictions on the test data (chr 1 of cell line X3).
+# Store predictions in a variable called "pred" which is a numpy array.
+
+pred = None
+# ---------------------------INSERT CODE HERE---------------------------
+
+y_pred_log = best_model.predict(X_test.drop(columns=["gene_name"]))
+pred = np.expm1(y_pred_log) 
+pred = np.array(pred, dtype=np.float64)
+
+# ----------------------------------------------------------------------
+
+# Check if "pred" meets the specified constrains
+assert isinstance(pred, np.ndarray), 'Prediction array must be a numpy array'
+assert np.issubdtype(pred.dtype, np.number), 'Prediction array must be numeric'
+#assert pred.shape[0] == len(X2_train), 'Each gene should have a unique predicted expression'
+assert pred.shape[0] == len(test_genes), 'Each gene should have a unique predicted expression'
+```
+:::
+
+::: {.cell .markdown}
+#### Store Predictions in the Required Format
+:::
+
+:::: {.cell .code execution_count="90"}
+``` python
+save_dir = "/Users/ferdinandunterhuber/Documents/Studium/Master/ETH/ML for Genomics" 
+file_name = "gex_predicted.csv"         
+zip_name = "Team_GeneCrackers_Project1.zip" 
+save_path = os.path.join(save_dir, zip_name)
+compression_options = dict(method="zip", archive_name=file_name)
+
+test_genes["gex_predicted"] = pred.tolist()
+
+test_genes[["gene_name", "gex_predicted"]].to_csv(
+    save_path, 
+    compression=compression_options, 
+    index=True 
+)
+
+print(f"✅ Submission ZIP created successfully at:\n{save_path}")
+print(f"ZIP enthält Datei: {file_name}")
+```
+
+::: {.output .stream .stdout}
+    ✅ Submission ZIP created successfully at:
+    /Users/ferdinandunterhuber/Documents/Studium/Master/ETH/ML for Genomics/Team_GeneCrackers_Project1.zip
+    ZIP enthält Datei: gex_predicted.csv
+:::
+::::
