@@ -7,7 +7,7 @@ Developed an end-to-end Scanpy and Harmony batch-correction pipeline, optimizing
 
 Epigenomic Gene Expression: Engineered TSS-centered 2kb genomic features across 7 histone and chromatin accessibility markers 
 
-### Project 1
+# Project 1
 The project predicts gene expression levels (gex) across cell lines based on epigenomic histone modifications and chromatin accessibility around Transcription Start Sites (TSS).
 ## Project Overview
 Gene regulation is heavily influenced by local chromatin state. This project extracts continuous and discrete genomic signals around TSS regions ($\pm 2000\text{ bp}$) to train regression models that rank and predict quantitative gene expression.Epigenomic Marks & Features: H3K27me3, H3K4me1, H3K4me3, H3K27ac, H3K36me3, H3K9me3, and DNase.Primary Metric: Spearman’s rank correlation ($\rho$).
