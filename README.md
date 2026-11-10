@@ -1,7 +1,38 @@
-Built PyTorch deep generative models (scVI/scANVI) and NNLS regression pipelines to annotate $\sim$50k single-cell profiles and deconvolve bulk RNA-seq samples (RMSE: 0.077).
+# Deep Generative Modeling for Single-Cell Annotation & Bulk Deconvolution
 
+A PyTorch pipeline leveraging deep generative models (scVI/scANVI VAEs), unsupervised domain adaptation, and NNLS regression to learn compact latent representations from ~50k high-dimensional single-cell profiles for cell-type classification and bulk RNA-seq deconvolution.
 
-Developed an end-to-end Scanpy and Harmony batch-correction pipeline, optimizing graph clustering via grid search to achieve a 0.79 ARI score earning a 0.25 grade bonus for ranking in the top 10\% of the class.}
+---
+
+## Architecture & Methodology
+
+1. **Latent Representation Learning (VAEs)**
+   * Trained deep generative models (scVI) to map high-dimensional, noisy single-cell count data into low-dimensional latent embeddings.
+   * Leveraged semi-supervised Variational Autoencoders (scANVI) for cell-type annotation across unlabeled profiles.
+
+2. **Domain Adaptation & Graph Clustering**
+   * Aligned shifted data distributions across batches using Harmony domain adaptation.
+   * Optimized KNN graph-clustering topology via grid search to enforce neighborhood structure in the latent space.
+
+3. **Constrained Regression Deconvolution**
+   * Constructed a Non-Negative Least Squares (NNLS) regression pipeline operating on signature matrices derived from latent embeddings to predict cell-type proportions in bulk RNA-seq samples.
+
+---
+
+## Results
+
+| Task | Metric | Score |
+| :--- | :--- | :--- |
+| **Domain Alignment & Clustering** | Adjusted Rand Index (ARI) | **0.79** |
+| **Bulk Sample Deconvolution** | Root Mean Square Error (RMSE) | **0.077** |
+| **Class Benchmark** | Performance Ranking | **Top 10%** (+0.25 Grade Bonus) |
+
+---
+
+## Dependencies
+
+```bash
+pip install torch scanpy scvi-tools harmony-pytorch numpy pandas scikit-learn scipy
 
 
 
