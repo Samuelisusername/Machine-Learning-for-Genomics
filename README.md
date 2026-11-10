@@ -33,7 +33,7 @@ A PyTorch pipeline leveraging deep generative models (scVI/scANVI VAEs), unsuper
 
 ```bash
 pip install torch scanpy scvi-tools harmony-pytorch numpy pandas scikit-learn scipy
-
+```
 
 
 Epigenomic Gene Expression: Engineered TSS-centered 2kb genomic features across 7 histone and chromatin accessibility markers 
